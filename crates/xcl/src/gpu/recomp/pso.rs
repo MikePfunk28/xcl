@@ -112,10 +112,11 @@ pub fn in_switch_form<R>(f: impl FnOnce() -> R) -> R {
 /// instead of a `switch` over root UAVs. Opt-in: on with `XCL_HEAP_WINDOWS=1`, unless the views
 /// could not be made (no shared heap: then the switch, as before). Off by default: two NVIDIA
 /// setups failed with it (the driver's compiler ending the process; a device removal when the
-/// views are made on an 8 GB card) that other machines do not show.
+/// views are made on an 8 GB card) that other machines do not show. Off too where the driver's
+/// atomics on such a window reach other windows (`heap_atomics`: Intel Arc).
 pub fn heap_windows() -> bool {
     static ENV: OnceLock<bool> = OnceLock::new();
-    *ENV.get_or_init(|| std::env::var("XCL_HEAP_WINDOWS").is_ok_and(|v| v.trim() == "1")) && !crate::hle::d3d12x::console_heap::window_views_failed()
+    *ENV.get_or_init(|| std::env::var("XCL_HEAP_WINDOWS").is_ok_and(|v| v.trim() == "1")) && !crate::hle::d3d12x::console_heap::window_views_failed() && !super::heap_atomics::refused()
 }
 
 /// A static sampler of a translated program: (S#, comparison) – see `Translation`.

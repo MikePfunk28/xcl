@@ -377,7 +377,7 @@ unsafe fn open_uma(device: &ID3D12Device, allow_driver_remap: bool) {
     );
     *UMA_HEAPS.lock().unwrap() = heaps;
     // shaders take the windows from the shared descriptor heap (`pso::heap_windows`)
-    if n > 1 && crate::gpu::recomp::pso::heap_windows() {
+    if n > 1 && crate::gpu::recomp::pso::heap_windows() && crate::gpu::recomp::heap_atomics::usable(device) {
         let views: Vec<(usize, usize)> = bufs.iter().enumerate().map(|(k, b)| (b.0, u.window(k).1)).collect();
         if super::console_heap::set_window_views(device, &views) {
             crate::xlog_info!("D3D12.X: memory windows from the shared descriptor heap (no per-access switch)");
