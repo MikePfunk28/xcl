@@ -345,12 +345,23 @@ fn doubles_match_cpu() {
 
 #[test]
 fn groupshared_barrier_and_atomics_run() {
+    groupshared_barrier_and_atomics(false);
+}
+
+/// The same kernel with a 64-bit groupshared accumulator, which needs
+/// `AtomicInt64OnGroupSharedSupported` (Intel Arc refuses the pipeline without it).
+#[test]
+fn groupshared_atomic64_run() {
+    groupshared_barrier_and_atomics(true);
+}
+
+fn groupshared_barrier_and_atomics(with64: bool) {
     let mut k = kernel();
     let i32 = k.s.m.i32();
     let i64 = k.s.m.i64();
     let gs = k.s.groupshared("gs", i32, 32);
     let acc = k.s.groupshared("acc", i32, 2);
-    let acc64 = k.s.groupshared("acc64", i64, 1);
+    let acc64 = with64.then(|| k.s.groupshared("acc64", i64, 1));
     let v = k.input(0);
     let zero = k.s.m.i32c(0);
     let one = k.s.m.i32c(1);
@@ -362,8 +373,10 @@ fn groupshared_barrier_and_atomics_run() {
     k.s.m.set_block(init);
     k.s.gs_store(acc, zero, zero);
     k.s.gs_store(acc, one, zero);
-    let z64 = k.s.m.const_int(i64, 0);
-    k.s.gs_store(acc64, zero, z64);
+    if let Some(acc64) = acc64 {
+        let z64 = k.s.m.const_int(i64, 0);
+        k.s.gs_store(acc64, zero, z64);
+    }
     k.s.m.br(join);
     k.s.m.set_block(join);
     k.s.gs_store(gs, k.lane, v);
@@ -373,8 +386,10 @@ fn groupshared_barrier_and_atomics_run() {
     let other = k.s.gs_load(gs, rev);
     k.s.gs_atomic(RmwOp::Add, acc, zero, v);
     k.s.gs_atomic(RmwOp::UMax, acc, one, v);
-    let v64 = k.s.m.cast(CastOp::ZExt, v, i64);
-    k.s.gs_atomic(RmwOp::Add, acc64, zero, v64);
+    if let Some(acc64) = acc64 {
+        let v64 = k.s.m.cast(CastOp::ZExt, v, i64);
+        k.s.gs_atomic(RmwOp::Add, acc64, zero, v64);
+    }
     // cmpxchg: only the lane that sees 0 in gs[0] after barrier... use a
     // deterministic one: every lane tries gs[lane] == v → v + 1.
     let vp1 = k.s.m.bin(BinOp::Add, v, one);
@@ -382,14 +397,26 @@ fn groupshared_barrier_and_atomics_run() {
     k.s.barrier(barrier::GROUP_SYNC);
     let sum = k.s.gs_load(acc, zero);
     let max = k.s.gs_load(acc, one);
-    let s64 = k.s.gs_load(acc64, zero);
-    let s64hi = { let c = k.s.m.const_int(i64, 32); k.s.m.bin(BinOp::LShr, s64, c) };
-    let s64hi = k.s.m.cast(CastOp::Trunc, s64hi, i32);
+    let s64hi = acc64.map(|acc64| {
+        let s64 = k.s.gs_load(acc64, zero);
+        let c = k.s.m.const_int(i64, 32);
+        let hi = k.s.m.bin(BinOp::LShr, s64, c);
+        k.s.m.cast(CastOp::Trunc, hi, i32)
+    });
     let after = k.s.gs_load(gs, k.lane);
-    for (i, x) in [other, sum, max, s64hi, old, after].into_iter().enumerate() {
-        k.out(i as u32, x);
+    for (i, x) in [Some(other), Some(sum), Some(max), s64hi, Some(old), Some(after)].into_iter().enumerate() {
+        if let Some(x) = x {
+            k.out(i as u32, x);
+        }
     }
     let c = k.finish([32, 1, 1]);
+    if with64 {
+        match runner::groupshared_atomic64_supported() {
+            Ok(true) => {}
+            Ok(false) => return runner::skip_test("no 64-bit groupshared atomics"),
+            Err(e) => return runner::skip_test(&e),
+        }
+    }
     let vals: Vec<u32> = (0..32).map(|l| 0x9000_0000u32.wrapping_add(l * 0x0100_0001)).collect();
     let Some(r) = gpu(&c, &mem_of(&[vals.clone()]), &[], &[]) else { return };
     let sum: u32 = vals.iter().fold(0u32, |a, &b| a.wrapping_add(b));
@@ -398,7 +425,9 @@ fn groupshared_barrier_and_atomics_run() {
         assert_eq!(outv(&r, 0)[l], vals[31 - l]);
         assert_eq!(outv(&r, 1)[l], sum);
         assert_eq!(outv(&r, 2)[l], *vals.iter().max().unwrap());
-        assert_eq!(outv(&r, 3)[l], (s64 >> 32) as u32);
+        if with64 {
+            assert_eq!(outv(&r, 3)[l], (s64 >> 32) as u32);
+        }
         assert_eq!(outv(&r, 4)[l], vals[l]);
         assert_eq!(outv(&r, 5)[l], vals[l] + 1);
     }

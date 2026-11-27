@@ -65,6 +65,8 @@ struct Gpu {
     wave32: bool,
     /// mesh shader tier 1 or higher (`mesh_draw`)
     mesh: bool,
+    /// 64-bit atomics on groupshared memory (`AtomicInt64OnGroupSharedSupported`; Intel Arc has none)
+    gs_atomic64: bool,
 }
 
 // D3D12 objects are free-threaded; access is serialised by the mutex.
@@ -118,11 +120,14 @@ fn init() -> Result<Gpu, String> {
         let mut o7 = D3D12_FEATURE_DATA_D3D12_OPTIONS7::default();
         let mesh = dev.CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &mut o7 as *mut _ as _, std::mem::size_of_val(&o7) as u32).is_ok()
             && o7.MeshShaderTier.0 >= D3D12_MESH_SHADER_TIER_1.0;
+        let mut o9 = D3D12_FEATURE_DATA_D3D12_OPTIONS9::default();
+        let gs_atomic64 = dev.CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS9, &mut o9 as *mut _ as _, std::mem::size_of_val(&o9) as u32).is_ok()
+            && o9.AtomicInt64OnGroupSharedSupported.as_bool();
         let queue: ID3D12CommandQueue =
             dev.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC { Type: D3D12_COMMAND_LIST_TYPE_DIRECT, ..Default::default() }).map_err(e)?;
         let rs = root_signature(&dev, false)?;
         let fence: ID3D12Fence = dev.CreateFence(0, D3D12_FENCE_FLAG_NONE).map_err(e)?;
-        Ok(Gpu { dev, queue, rs, fence, value: 0, adapter: name, wave64, wave32, mesh })
+        Ok(Gpu { dev, queue, rs, fence, value: 0, adapter: name, wave64, wave32, mesh, gs_atomic64 })
     }
 }
 
@@ -611,6 +616,14 @@ pub fn mesh_shaders_supported() -> Result<bool, String> {
     let mut g = GPU.lock().unwrap();
     let gpu = g.get_or_insert_with(init);
     gpu.as_ref().map(|x| x.mesh).map_err(|x| x.clone())
+}
+
+/// Whether the adapter runs 64-bit atomics on groupshared memory; without them the driver
+/// refuses a pipeline that uses one (`E_INVALIDARG` on Intel Arc).
+pub fn groupshared_atomic64_supported() -> Result<bool, String> {
+    let mut g = GPU.lock().unwrap();
+    let gpu = g.get_or_insert_with(init);
+    gpu.as_ref().map(|x| x.gs_atomic64).map_err(|x| x.clone())
 }
 
 /// A GPU test (or a part of one) that cannot run here, `reason` one of "no GPU", "no DXC",
