@@ -171,6 +171,29 @@ void main(uint l : SV_GroupThreadID) {
     }
 }
 
+/// `heap_atomics::probe` runs on the adapter, and its verdict is the one a wave of lanes on two
+/// windows shows (`gpu_heap_windows_divergent_lanes_match_switch_form` where it is true).
+#[test]
+fn gpu_heap_atomics_probe_runs() {
+    let Some((dev, name)) = device() else {
+        super::runner::skip_test("no GPU");
+        return;
+    };
+    if super::dxc::location().is_err() {
+        super::runner::skip_test("no DXC");
+        return;
+    }
+    let mut sm = D3D12_FEATURE_DATA_SHADER_MODEL { HighestShaderModel: D3D_SHADER_MODEL_6_6 };
+    let sm_ok = unsafe { dev.CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &mut sm as *mut _ as _, std::mem::size_of_val(&sm) as u32) };
+    if sm_ok.is_err() || sm.HighestShaderModel.0 < D3D_SHADER_MODEL_6_6.0 {
+        super::runner::skip_test(&crate::gpu::agility::format_no_sm66_message(&name, crate::gpu::agility::state()));
+        return;
+    }
+    let first = unsafe { super::heap_atomics::probe(&dev) }.unwrap_or_else(|e| panic!("{name}: {e}"));
+    println!("{name}: atomics on heap windows stay on their window: {first}");
+    assert_eq!(unsafe { super::heap_atomics::probe(&dev) }, Ok(first), "{name}: the same verdict twice");
+}
+
 fn gpu_kernel_ready() -> bool {
     if super::runner::adapter().is_err() {
         super::runner::skip_test("no GPU");
@@ -250,8 +273,16 @@ fn gpu_heap_windows_divergent_lanes_match_switch_form() {
         r[9] = 1;
     }
 
+    // where the runtime refuses the heap form (`heap_atomics`), only the switch form is checked
+    let heap_form = device().is_some_and(|(dev, _)| unsafe { super::heap_atomics::probe(&dev) } != Ok(false));
+    if !heap_form {
+        super::runner::skip_test("heap-window atomics reach other windows");
+    }
     let mut baseline: Option<Vec<u32>> = None;
     for (direct, heap) in [(false, false), (false, true), (true, false), (true, true)] {
+        if heap && !heap_form {
+            continue;
+        }
         for l in 0..64u64 {
             *word(w0 + 0x1000 + 4 * l) = 0x1000 + l as u32;
             *word(w1 + 0x1000 + 4 * l) = 0x2000 + l as u32;
