@@ -229,7 +229,7 @@ fn quad_bits(act: &str, cond: &str, tmp: &str) -> Option<(String, String)> {
 fn quad_member(expr: &str, p: u32, tmp: &str, reads: &mut std::collections::BTreeSet<(String, u32)>) -> Option<String> {
     const PURE: &[&str] = &[
         "asfloat", "asuint", "asint", "asdouble", "isnan", "isnan_d", "isinf", "isfinite", "and", "or", "select", "abs", "min", "max",
-        "fclass", "fclass16", "fclass64", "f16tof32", "f32tof16", "sdwa_sel", "firstbitlow", "firstbithigh", "countbits", "reversebits",
+        "fclass", "fclass16", "fclass64", "f16_bits32", "f16tof32", "f32tof16", "sdwa_sel", "firstbitlow", "firstbithigh", "countbits", "reversebits",
         "mul_hi_u32", "uint", "int", "float", "double",
     ];
     const SAME: &[&str] = &["vcc_lo", "vcc_hi", "exec_lo", "exec_hi", "m0", "scc", "true", "false", "uint", "int", "float", "bool", "double", "uint64_t", "int64_t"];
@@ -4202,8 +4202,8 @@ impl Em {
                     let cond = format!("((({c}) >> fclass16({h})) & 1u) != 0u");
                     return self.vopc_write(d, cmpx, outs, &cond);
                 }
-                ua = format!("asuint(f16tof32({}))", half(0, &ua));
-                ub = format!("asuint(f16tof32({}))", half(1, &ub));
+                ua = format!("f16_bits32({})", half(0, &ua));
+                ub = format!("f16_bits32({})", half(1, &ub));
                 "f32"
             }
             "u16" => {
@@ -6057,6 +6057,12 @@ void put_bits(inout uint4 r, uint off, uint w, uint v) {
     uint i = off >> 5; uint s = off & 31u;
     or_at4(r, i, v << s);
     if (s != 0u && s + w > 32u && i < 3u) or_at4(r, i + 1u, v >> (32u - s));
+}
+uint f16_bits32(uint h) {
+    uint m = h & 0x3FFu; uint e = (h >> 10) & 31u; uint p = firstbithigh(m | 1u);
+    uint den = select(m == 0u, 0u, ((p + 103u) << 23) | ((m << (23u - p)) & 0x7FFFFFu));
+    uint nrm = ((e + select(e == 31u, 224u, 112u)) << 23) | (m << 13);
+    return ((h & 0x8000u) << 16) | select(e == 0u, den, nrm);
 }
 uint f16_rtz(float f) { uint h = f32tof16(f) & 0xFFFFu; return h - (uint)and(and(!isnan(f), (h & 0x7FFFu) != 0u), abs(f16tof32(h)) > abs(f)); }
 uint fmt_encode(uint x, uint info, uint c) {
