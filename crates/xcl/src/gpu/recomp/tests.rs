@@ -2431,15 +2431,25 @@ fn implicit_lod_between_mips(s_sharp: [u32; 4]) {
     sgprs[16..24].copy_from_slice(&tsharp(0, 77, 9));
     sgprs[24..28].copy_from_slice(&s_sharp);
     let px = draw_console_views(None, Some(&ps), &[[0.0, 0.0], [0.0, 32.0], [32.0, 0.0]], &sgprs, &[tex], &[crate::gpu::desc::sampler_d3d12(&s_sharp, false)]);
+    // The weight of the smaller mip is the LOD's fraction, which hardware keeps in 8 bits and may
+    // compute a step off (Intel Arc: 63/256 for LOD 0.25, AMD: 64/256). So every pixel must be the
+    // two expected texels mixed with one weight, within 1/128 of 0.25 and the same in all pixels:
+    // a texel one off (the offset not applied in a mip) changes the weight of the pixels that are
+    // not clamped by 1/420 or more and leaves the clamped ones as they were.
+    let mut weights = Vec::new();
     for y in 0..16 {
         for x in 0..16 {
             let u = (x as f32 + 0.5) * scale;
             let texel = |size: f32| ((u * size).floor() + 1.0).clamp(0.0, size - 1.0);
-            let want = 0.75 * texel(8.0) + 0.25 * (100.0 + texel(4.0));
+            let (near, far) = (texel(8.0), 100.0 + texel(4.0));
             let got = px[y * 16 + x][0];
-            assert!((got - want).abs() < 0.02, "pixel ({x},{y}) = {got}, expected {want}");
+            let weight = (got - near) / (far - near);
+            assert!((weight - 0.25).abs() <= 1.0 / 128.0, "pixel ({x},{y}) = {got}: the mips' texels {near} and {far} with weight {weight}, expected 0.25");
+            weights.push(weight);
         }
     }
+    let (lo, hi) = weights.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &w| (lo.min(w), hi.max(w)));
+    assert!(hi - lo < 1.0 / 1024.0, "the mip weight differs between pixels: {lo}..{hi}");
 }
 
 /// 48 SGPR spill slots in lanes 0..47 of v30 (`v_writelane` / `v_readlane`, as 287 retail
